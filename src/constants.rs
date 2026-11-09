@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::{env, fs};
 
@@ -9,6 +9,7 @@ use std::{env, fs};
 
 pub static IDEV_HOME: LazyLock<PathBuf> = LazyLock::new(|| idev_home());
 pub static IDEV_CONFIG_PATH: LazyLock<PathBuf> = LazyLock::new(|| idev_config_path());
+pub static IDEV_PROJECT_DIR: LazyLock<PathBuf> = LazyLock::new(|| idev_project_dir());
 
 
 // ---------------------------
@@ -56,6 +57,10 @@ fn idev_home() -> PathBuf {
 
 fn idev_config_path() -> PathBuf {
     idev_home().join(".idevconfig")
+}
+
+fn idev_project_dir() -> PathBuf {
+    home_dir().join("IANTIRTACOM")
 }
 
 
