@@ -10,3 +10,6 @@ serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 enum_dispatch = "*"
 globset = "*"
+toml = "*"
+log = "*"
+env_logger = "*"

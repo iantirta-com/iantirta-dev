@@ -1,9 +1,10 @@
-use clap::{Subcommand};
-use crate::cli::DevelopCommand;
-use crate::config::BaseConfig;
-use enum_dispatch::enum_dispatch;
 use std::error::Error;
 
+use clap::{Subcommand};
+use enum_dispatch::enum_dispatch;
+
+use crate::cli::DevelopCommand;
+use crate::config::BaseConfig;
 
 #[enum_dispatch]
 pub trait Action {
@@ -14,7 +15,6 @@ pub trait Action {
 #[enum_dispatch(Action)]
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Default
     Develop(DevelopCommand),
 
     //Config(ConfigCommand),
