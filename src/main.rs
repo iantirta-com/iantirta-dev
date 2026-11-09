@@ -1,8 +1,6 @@
-use clap::{Parser};
-use iantirta_dev::cli::Cli;
 
+use iantirta_dev::cli::main as cli_main;
 
 fn main() {
-    let app = Cli::parse();
-    app.run();
+    cli_main();
 }

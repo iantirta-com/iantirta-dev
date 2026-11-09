@@ -13,6 +13,7 @@ struct _Config {
     projects: HashMap<String, AppConfig>,
 }
 
+
 impl _Config {
     fn default() -> Self {
         Self {

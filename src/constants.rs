@@ -1,37 +1,66 @@
-
 use std::path::PathBuf;
-use std::sync::OnceLock;
-use std::{env};
+use std::sync::LazyLock;
+use std::{env, fs};
 
-use crate::cachepath;
+// ---------------------------
+// Public API constants
+// ---------------------------
 
-pub static IDEV_HOME_DIR: OnceLock<PathBuf> = OnceLock::new();
-pub static IDEV_CONFIG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+pub static IDEV_HOME: LazyLock<PathBuf> = LazyLock::new(|| idev_home());
+pub static IDEV_CONFIG_PATH: LazyLock<PathBuf> = LazyLock::new(|| idev_config_path());
 
 
-/// Returns a reference to the global home directory
-pub fn get_home_dir() -> &'static PathBuf {
-    IDEV_HOME_DIR.get_or_init(|| {
-        let base_home: String = if env::consts::OS == "windows" {
-            env::var("USERPROFILE").unwrap_or_else(|_| String::from("C\\"))
-        } else {
-            env::var("HOME").unwrap_or_else(|_| String::from("/"))
-        };
-        let mut path = PathBuf::from(base_home);
-        path.push(".idev");
+// ---------------------------
+// Helper method const getter
+// ---------------------------
 
-        let final_path = cachepath::get_or_create_path(path);
-        cachepath::make_cachedir_tag(&final_path);
 
-        final_path
-    })
+const CACHEDIR_CONTENT: &str = r#"Signature: 8a477f597d28d172789f06886806bc55
+# This file is a cache directory tag created by iantirta-dev.
+# For information about cache directory tags, see:
+#	http://www.brynosaurus.com/cachedir/
+"#;
+
+
+fn ensure_dir(path: &PathBuf) {
+    if !path.exists() {
+        fs::create_dir_all(&path)
+            .unwrap_or_else(|_| panic!("Failed to create directory: {}", path.display()));
+    }
 }
 
 
-/// Returns a reference to the global configuration path, building on top of the home directory.
-pub fn get_config_path() -> &'static PathBuf {
-    IDEV_CONFIG_PATH.get_or_init(|| {
-        let home = get_home_dir();
-        home.join("config.json")
-    })
+fn make_cachedir_tag(dirpath: &PathBuf) {
+    let cachedir_path = dirpath.join("CACHEDIR.TAG");
+    if !cachedir_path.exists() {
+        fs::write(cachedir_path, CACHEDIR_CONTENT)
+            .expect("Failed to write CACHEDIR.TAG file");
+    }
+}
+
+
+fn home_dir() -> PathBuf {
+    env::home_dir().expect("Failed to get home directory")
+}
+
+
+fn idev_home() -> PathBuf {
+    let mut home = home_dir();
+    home.push(".idev");
+    ensure_dir(&home);
+    make_cachedir_tag(&home);
+    home
+}
+
+
+fn idev_config_path() -> PathBuf {
+    idev_home().join(".idevconfig")
+}
+
+
+fn main() {
+    println!("Idev Home dir: {:#?}", *IDEV_HOME);
+    println!("Idev Config Path: {:#?}", *IDEV_CONFIG_PATH);
+    println!("Home dir: {:#?}", home_dir());
 }
