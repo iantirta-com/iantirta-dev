@@ -1,7 +1,6 @@
-use clap::{Error, Command, Args, Parser, Subcommand, CommandFactory, ArgAction, FromArgMatches};
-use crate::cli::{Commands, Action};
+use clap::{Args, Parser, CommandFactory, FromArgMatches};
+use crate::cli::Commands;
 use std::path::PathBuf;
-use std::process::exit;
 use crate::constants::{IDEV_CONFIG_PATH, IDEV_PROJECT_DIR};
 use regex::Regex;
 

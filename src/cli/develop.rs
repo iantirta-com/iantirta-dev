@@ -1,9 +1,8 @@
-use clap::{Args, Subcommand};
+use clap::Args;
 use crate::config::BaseConfig;
 use crate::cli::{Action, ProjectArgs};
-use std::env::current_dir;
-use std::fs::{self, DirEntry, ReadDir};
-use std::process::exit;
+use std::fs::{self, ReadDir};
+use std::process::{exit, Stdio, Command};
 use std::path::PathBuf;
 use std::error::Error;
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -79,14 +78,23 @@ impl Action for DevelopCommand {
         println!("Is Python: {:?}", is_python);
 
         let prog_name = if cfg!(target_os = "windows") {
-            "cmd".to_string()
+            "powershell".to_string()
         } else {
-            "sh".to_string()
+            match std::env::var("SHELL") {
+                Ok(cmd) => cmd,
+                Err(e) => {
+                    println!("Error while getting SHELL Value: {}", e);
+                    "bash".to_string()
+                }
+            }
         };
-        let mut child = std::process::Command::new(prog_name) // Lowercase 'sh', 'bash', or std::env::var("SHELL")
-                .current_dir(final_path)
-                .spawn()
-                .expect("Failed to spawn shell");
+        let mut child = Command::new(prog_name) // Lowercase 'sh', 'bash', or std::env::var("SHELL")
+            .current_dir(final_path)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("Failed to spawn shell");
 
         let _ = child.wait().expect("Failed to wait on child process");
 
