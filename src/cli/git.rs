@@ -79,10 +79,21 @@ impl GitCommand {
         results.sort_by(|a, b| a.0.cmp(&b.0));
 
         let mut dirty_repos = Vec::new();
-        for (name, path, output, is_dirty) in results {
+        let mut behind_repos = Vec::new();
+        let mut ahead_repos = Vec::new();
+
+        for (name, path, output, is_dirty, behind_count, ahead_count) in results {
             println!("{}", output);
+
+            if behind_count > 0 {
+                behind_repos.push((name.clone(), path.clone()));
+            }
             if is_dirty {
                 dirty_repos.push((name, path));
+            } else if ahead_count > 0 {
+                // If it's dirty, we will prompt to push during the commit phase instead.
+                // Only add to ahead_repos if it is clean but has unpushed commits.
+                ahead_repos.push((name.clone(), path.clone()));
             }
         }
 
@@ -90,6 +101,11 @@ impl GitCommand {
             println!("No valid git projects found in '{}'", project_dir.display().bright_yellow());
         } else {
             println!("\nChecked {} repositories.", checked_count.bright_cyan());
+        }
+
+        if !behind_repos.is_empty() {
+            print!("\nFound {} repository(s) behind remote. Pull changes? [y/N]: ", behind_repos.len().bright_yellow());
+            std::io::stdout().flush()?;
         }
 
         if !dirty_repos.is_empty() {
@@ -102,6 +118,11 @@ impl GitCommand {
             if input.trim().eq_ignore_ascii_case("y") {
                 self.interactive_commit(dirty_repos)?;
             }
+        }
+
+        if !ahead_repos.is_empty() {
+            print!("\nFound {} repository(s) with unpushed commits. Push changes? [y/N]: ", ahead_repos.len().bright_yellow());
+            std::io::stdout().flush()?;
         }
 
         Ok(0)
@@ -168,7 +189,7 @@ impl GitCommand {
 
 /// Git method wrapper
 impl GitCommand {
-    fn check_repo_status(path: &Path, name: &str) -> (String, PathBuf, String, bool) {
+    fn check_repo_status(path: &Path, name: &str) -> (String, PathBuf, String, bool, u32, u32) {
         // We use `--porcelain -b` to get machine-readable output including branch ahead/behind status
         let output = Command::new("git")
             .arg("status")
@@ -178,6 +199,9 @@ impl GitCommand {
             .output();
 
         let mut final_is_dirty = false;
+        let mut final_behind_count = 0;
+        let mut final_ahead_count = 0;
+
         let formatted_result = match output {
             Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
@@ -231,6 +255,8 @@ impl GitCommand {
                 if behind_count == 0 && ahead_count == 0 {
                     sync_ui = format!("{}", "Synced".green());
                 }
+                final_behind_count = behind_count;
+                final_ahead_count = ahead_count;
 
                 format!(
                     "{}...## {}\n  Status: {}\n  Remote: {}",
@@ -249,7 +275,7 @@ impl GitCommand {
             }
         };
 
-        (name.to_string(), path.to_path_buf(), formatted_result, final_is_dirty)
+        (name.to_string(), path.to_path_buf(), formatted_result, final_is_dirty, final_behind_count, final_ahead_count)
     }
 }
 
