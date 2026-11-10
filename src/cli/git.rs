@@ -1,9 +1,10 @@
 use std::{
     error::Error,
-    path::{Path},
+    path::{Path, PathBuf},
     process::Command,
     sync::mpsc,
     thread,
+    io::Write
 };
 
 use clap::{Args, Subcommand};
@@ -76,8 +77,13 @@ impl GitCommand {
             }
         }
         results.sort_by(|a, b| a.0.cmp(&b.0));
-        for (_, output) in results {
+
+        let mut dirty_repos = Vec::new();
+        for (name, path, output, is_dirty) in results {
             println!("{}", output);
+            if is_dirty {
+                dirty_repos.push((name, path));
+            }
         }
 
         if checked_count == 0 {
@@ -86,14 +92,82 @@ impl GitCommand {
             println!("\nChecked {} repositories.", checked_count.bright_cyan());
         }
 
+        if !dirty_repos.is_empty() {
+            print!("\nFound {} repository(s) with uncommitted changes. Review and commit? [y/N]: ", dirty_repos.len().bright_yellow());
+            std::io::stdout().flush()?;
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            
+            if input.trim().eq_ignore_ascii_case("y") {
+                self.interactive_commit(dirty_repos)?;
+            }
+        }
+
         Ok(0)
+    }
+
+    fn interactive_commit(&self, dirty_repos: Vec<(String, PathBuf)>) -> Result<(), Box<dyn Error>> {
+        for (name, path) in dirty_repos {
+            println!("\n{}", "==================================================".bright_cyan());
+            println!("📝 Reviewing: {}", name.bold().bright_yellow());
+            println!("{}", "==================================================".bright_cyan());
+
+            // 1. Show the user what actually changed (Short Status)
+            let status = Command::new("git")
+                .arg("status")
+                .arg("-s")
+                .current_dir(&path)
+                .output()?;
+
+            println!("{}", String::from_utf8_lossy(&status.stdout));
+
+            // 2. Prompt for commit message
+            print!("Enter commit message (Leave empty to skip, 'q' to abort all): ");
+            std::io::stdout().flush()?;
+            
+            let mut msg = String::new();
+            std::io::stdin().read_line(&mut msg)?;
+            let msg = msg.trim();
+
+            if msg.eq_ignore_ascii_case("q") {
+                println!("{}", "Aborting remaining commits.".bright_red());
+                break;
+            }
+
+            if !msg.is_empty() {
+                // 3. git add .
+                Command::new("git")
+                    .arg("add")
+                    .arg(".")
+                    .current_dir(&path)
+                    .status()?;
+
+                // 4. git commit -m "..."
+                let commit = Command::new("git")
+                    .arg("commit")
+                    .arg("-m")
+                    .arg(msg)
+                    .current_dir(&path)
+                    .status()?;
+
+                if commit.success() {
+                    println!("{} {}", "✓".green(), "Committed successfully!".green());
+                } else {
+                    println!("{} {}", "✗".red(), "Commit failed.".red());
+                }
+            } else {
+                println!("{}", "Skipped.".bright_black());
+            }
+        }
+        Ok(())
     }
 }
 
 
 /// Git method wrapper
 impl GitCommand {
-    fn check_repo_status(path: &Path, name: &str) -> (String, String) {
+    fn check_repo_status(path: &Path, name: &str) -> (String, PathBuf, String, bool) {
         // We use `--porcelain -b` to get machine-readable output including branch ahead/behind status
         let output = Command::new("git")
             .arg("status")
@@ -102,6 +176,7 @@ impl GitCommand {
             .current_dir(path)
             .output();
 
+        let mut final_is_dirty = false;
         let formatted_result = match output {
             Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
@@ -137,6 +212,7 @@ impl GitCommand {
                 // If there are ANY lines after the branch line, the working tree is dirty
                 if lines.next().is_some() {
                     is_dirty = true;
+                    final_is_dirty = true;
                 }
 
                 let status_color: Style= Style::new();
@@ -172,7 +248,7 @@ impl GitCommand {
             }
         };
 
-        (name.to_string(), formatted_result)
+        (name.to_string(), path.to_path_buf(), formatted_result, final_is_dirty)
     }
 }
 
