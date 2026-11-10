@@ -194,6 +194,25 @@ impl GitCommand {
 
                 if commit.success() {
                     println!("{} {}", "✓".green(), "Committed successfully!".green());
+
+                    print!("Push changes to remote? [y/N]: ");
+                    std::io::stdout().flush()?;
+                    let mut push_msg = String::new();
+                    std::io::stdin().read_line(&mut push_msg)?;
+                    
+                    if push_msg.trim().eq_ignore_ascii_case("y") {
+                        println!("  {} {}...", "⬆ Pushing".bright_green(), name.bold());
+                        let push_status = Command::new("git")
+                            .arg("push")
+                            .current_dir(&path)
+                            .status()?;
+                            
+                        if push_status.success() {
+                            println!("{} {}", "✓".green(), "Pushed successfully!".green());
+                        } else {
+                            println!("{} {}", "✗".red(), "Push failed.".red());
+                        }
+                    }
                 } else {
                     println!("{} {}", "✗".red(), "Commit failed.".red());
                 }
