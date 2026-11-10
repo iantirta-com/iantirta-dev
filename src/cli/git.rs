@@ -112,7 +112,7 @@ impl GitCommand {
             
             if input.trim().eq_ignore_ascii_case("y") {
                 for (name, path) in &behind_repos {
-                    println!("  {} {}...", "⬇ Pulling".bright_blue(), name.bold());
+                    println!("  {} {}...", "~ Pulling".bright_blue(), name.bold());
                     Command::new("git").arg("pull").current_dir(path).status()?;
                 }
             }
@@ -139,7 +139,7 @@ impl GitCommand {
             
             if input.trim().eq_ignore_ascii_case("y") {
                 for (name, path) in &ahead_repos {
-                    println!("  {} {}...", "⬆ Pushing".bright_green(), name.bold());
+                    println!("  {} {}...", "+ Pushing".bright_green(), name.bold());
                     Command::new("git").arg("push").current_dir(path).status()?;
                 }
             }
