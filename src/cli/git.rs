@@ -106,6 +106,16 @@ impl GitCommand {
         if !behind_repos.is_empty() {
             print!("\nFound {} repository(s) behind remote. Pull changes? [y/N]: ", behind_repos.len().bright_yellow());
             std::io::stdout().flush()?;
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            
+            if input.trim().eq_ignore_ascii_case("y") {
+                for (name, path) in &behind_repos {
+                    println!("  {} {}...", "⬇ Pulling".bright_blue(), name.bold());
+                    Command::new("git").arg("pull").current_dir(path).status()?;
+                }
+            }
         }
 
         if !dirty_repos.is_empty() {
@@ -123,6 +133,16 @@ impl GitCommand {
         if !ahead_repos.is_empty() {
             print!("\nFound {} repository(s) with unpushed commits. Push changes? [y/N]: ", ahead_repos.len().bright_yellow());
             std::io::stdout().flush()?;
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            
+            if input.trim().eq_ignore_ascii_case("y") {
+                for (name, path) in &ahead_repos {
+                    println!("  {} {}...", "⬆ Pushing".bright_green(), name.bold());
+                    Command::new("git").arg("push").current_dir(path).status()?;
+                }
+            }
         }
 
         Ok(0)
