@@ -1,17 +1,8 @@
 
 use std::{
-    error::Error,
-    path::{
-        PathBuf
+    error::Error, fs, io::{self, Write}, path::PathBuf, process::{
+        Command, exit
     },
-    process::{
-        exit,
-        Stdio,
-        Command
-    },
-    fs,
-    io,
-    io::Write
 };
 
 use clap::{
@@ -25,7 +16,6 @@ use globset::{
 };
 
 use log::{
-    info,
     debug,
     error,
     warn,
@@ -48,7 +38,6 @@ use crate::{
 pub struct DevelopCommand {
     #[command(flatten)]
     pub project: ProjectArgs,
-
 }
 
 
@@ -100,11 +89,104 @@ impl DevelopCommand {
         }
         false
     }
+}
 
+
+/// Venv create build process
+impl DevelopCommand {
+    fn _input(&self, msg: &str) -> Result<String, Box<dyn Error>> {
+        print!("{}", msg);
+        io::stdout().flush()?;
+
+        let mut user_input = String::new();
+        io::stdin().read_line(&mut user_input)?;
+
+        Ok(user_input)
+    }
+
+    fn consent_venv_name(&self, config: &Config, project_id: &str) -> Result<String, Box<dyn Error>> {
+        let default_name = config.venv_prefix()
+            .replace("{prefix}", config.prefix())
+            .replace("{project_id}", project_id);
+        let msg = format!("Enter project venv folder name [{default_name}]: ");
+        let user_input = self._input(&msg)?;
+        let venv_name = user_input.trim();
+        let final_name = if venv_name.is_empty() {
+            &default_name
+        } else {
+            venv_name
+        };
+        Ok(final_name.to_string())
+    }
+
+    fn consent_venv_sys_sitepkg(&self) -> Result<bool, Box<dyn Error>> {
+        let user_input = self._input("Give venv access to system site-packages dir? [Y/n] (default:yes): ")?;
+        let sys_sitepkg = user_input.trim().to_lowercase();
+        let mut sys_sitepkg_bool = true;
+        if sys_sitepkg != "y" && sys_sitepkg != "yes" && !sys_sitepkg.is_empty() {
+            sys_sitepkg_bool = false;
+        };
+        Ok(sys_sitepkg_bool)
+    }
+
+    fn consent_venv_prompt(&self) -> Result<String, Box<dyn Error>> {
+        let user_input = self._input("Custom venv prompt: ")?;
+        let custom_prompt = user_input.trim();
+        Ok(custom_prompt.to_string())
+    }
+
+    /// Auto creation of venv with user consent
+    fn create_venv_with_consent(&self, config: &Config, project_id: &str, venv_base_dir: &PathBuf) -> Result<PathBuf, Box<dyn Error>>  {
+        println!("NOTE: If this is intentional you can skip creation process.\n");
+        let user_input = self._input("> Would you like to create one now? [Y/n]: ")?;
+        let consent = user_input.trim().to_lowercase();
+        if consent != "y" && consent != "yes" && !consent.is_empty() {
+            return Err(format!("Venv creation aborted by user for project: {}", project_id).into());
+        }
+
+        let venv_name = self.consent_venv_name(config, project_id)?;
+        let sys_site_pkg = self.consent_venv_sys_sitepkg()?;
+        let prompt = self.consent_venv_prompt()?;
+
+        // Actual creation
+        let venv_path = venv_base_dir.join(venv_name);
+        if !venv_base_dir.exists() {
+            fs::create_dir_all(&venv_base_dir)?;
+        }
+        println!("\x1b[1;36m⚙️  Creating virtual environment at {:?}...\x1b[0m", venv_path);
+        let python_bin = if cfg!(target_os = "windows") { "python" } else { "python3" };
+
+        let mut cmd = Command::new(python_bin);
+        
+        cmd.arg("-m")
+            .arg("venv")
+            .arg(&venv_path);
+
+        if sys_site_pkg {
+            cmd.arg("--system-site-packages");
+        }
+        if !prompt.is_empty() {
+            cmd.arg("--prompt")
+                .arg(prompt);
+        }
+        let status = cmd.status()?;
+
+        if status.success() {
+            println!("\x1b[1;32m✅ Virtual environment created successfully.\x1b[0m\n");
+            Ok(venv_path)
+        } else {
+            // Clean up the partially created directory if venv creation fails
+            if venv_path.exists() {
+                let _ = fs::remove_dir_all(&venv_path);
+            }
+            error!("Failed to create venv. Is Python installed?");
+            exit(status.code().unwrap_or(1));
+        }
+    }
 
     /// Iterate over venv_dir to find exact match to the user.
     /// And will create with user consent.
-    fn resolve_venv_path(&self, config: &Config, project_id: &str) -> Result<PathBuf, Box<dyn Error>>{
+    fn resolve_venv_path(&self, config: &Config, project_id: &str) -> Result<PathBuf, Box<dyn Error>> {
         let re = config.venv_re(&project_id);
         let venv_base_dir = config.venv_dir();
         trace!("venv re built: {:?}", re);
@@ -120,63 +202,45 @@ impl DevelopCommand {
         }
 
         // create
-        warn!(
-            "! Detected python environment but\
-            no venv available/found for project '{project_id}'.\n\
-            If this is intentional you can skip creation process.\n"
-        );
-        print!("> Would you like to create one now? [Y/n]: ");
-        io::stdout().flush()?; // Ensure the prompt prints before waiting for input
-
-        let mut consent = String::new();
-        io::stdin().read_line(&mut consent)?;
-
-        let consent = consent.trim().to_lowercase();
-        if consent != "y" && consent != "yes" && !consent.is_empty() {
-            return Err(format!("Venv creation aborted by user for project: {}", project_id).into());
+        warn!("! Detected python environment but no venv available/found for project '{project_id}'.");
+        match self.create_venv_with_consent(config, project_id, venv_base_dir) {
+            Ok(venv_path) => Ok(venv_path),
+            Err(e) => {
+                Err(format!("Error while creating venv: {}", e).into())
+            }
         }
-
-        let default_name = config.venv_prefix()
-            .replace("{prefix}", config.prefix())
-            .replace("{project_id}", project_id);
-        
-        print!("Enter venv folder name [{}]: ", default_name);
-        io::stdout().flush()?;
-
-        let mut custom_name = String::new();
-        io::stdin().read_line(&mut custom_name)?;
-        let custom_name = custom_name.trim();
-
-        let final_name = if custom_name.is_empty() {
-            &default_name
-        } else {
-            custom_name
-        };
-
-        let target_path = venv_base_dir.join(final_name);
-        
-        if !venv_base_dir.exists() {
-            fs::create_dir_all(&venv_base_dir)?;
-        }
-
-        println!("\x1b[1;36m⚙️  Creating virtual environment at {:?}...\x1b[0m", target_path);
-
-        
-        return Err(format!("Could not find venv directory for ID: {}", project_id).into());
     }
 }
 
 
-/// Venv create build process
-impl DevelopCommand {
-    
-}
-
 /// Build process method
 impl DevelopCommand {
-    fn _build_process_cmd_windows(&self, is_python: bool) -> Result<Command, Box<dyn Error>> {
-        // cmd = Command::new("powershell");
-        return Err("Windows development yet to supported.".into());
+
+    fn _build_process_cmd_windows_python(
+        &self,
+        cmd: &mut Command,
+        config: &Config,
+        project_id: &str,
+    ) -> Result<(), Box<dyn Error>>  {
+        let vp = self.resolve_venv_path(
+            config,
+            project_id
+        )?;
+        let activate_ps1 = vp.join("Scripts/activate.ps1");
+        cmd.arg("-Command")
+            .arg(&format!("& '{}'", activate_ps1.display()));
+        Ok(())
+    }
+
+    fn _build_process_cmd_windows(&self, is_python: bool, config: &Config, project_id: &str) -> Result<Command, Box<dyn Error>> {
+        let mut cmd = Command::new("powershell");
+        cmd.args([
+            "-NoExit",
+        ]);
+        if is_python {
+            self._build_process_cmd_windows_python(&mut cmd, config, project_id)?
+        }
+        Ok(cmd)
     }
     
     fn _build_process_cmd_linux_python(
@@ -200,7 +264,7 @@ impl DevelopCommand {
                  source {activate}\n\
                  export PS1=\"\\[\\e[1;35m\\][idev]\\[\\e[0m\\] $PS1\"\n\
                  export IDEV_ACTIVE_PROJECT=\"{project}\"\n",
-                activate = activate_sh.display(),
+                activate=activate_sh.display(),
                 project = project_id
             );
             std::fs::write(&temp_rc_path, rc_content)?;
@@ -245,7 +309,7 @@ impl DevelopCommand {
     /// build process cmd according to os
     fn build_process_cmd(&self, is_python: bool, config: &Config, project_id: &str) -> Result<Command, Box<dyn Error>> {
         if cfg!(target_os = "windows") {
-            self._build_process_cmd_windows(is_python)
+            self._build_process_cmd_windows(is_python, config, project_id)
         } else {
             self._build_process_cmd_linux(is_python, config, project_id)
         }

@@ -1,0 +1,186 @@
+use std::{
+    error::Error,
+    path::{Path},
+    process::Command,
+    sync::mpsc,
+    thread,
+};
+
+use clap::{Args, Subcommand};
+use log::{debug, trace};
+use owo_colors::{Style, OwoColorize};
+
+use crate::{
+    cli::{
+        Action
+    },
+    config::{
+        Config
+    }
+};
+
+#[derive(Args, Debug)]
+pub struct GitCommand {
+    #[command(subcommand)]
+    action: GitAction
+}
+
+
+#[derive(Subcommand, Debug)]
+pub enum GitAction {
+    /// Check for uncommitted changes and branch sync status across all projects
+    CheckAll,
+    CommitAll,
+    Commit
+}
+
+// Actionable method for git command
+impl GitCommand {
+    fn check_all(&self, config: &Config) -> Result<i32, Box<dyn Error>> {
+        let project_dir = config.project_dir();
+
+        // Println! so that its outside log
+        println!("Checking git status across workspaces...");
+        println!("Workspace: '{}'\n", project_dir.display());
+
+        let (tx, rx) = mpsc::channel();
+        let mut checked_count = 0;
+
+        for entry in project_dir.read_dir()? {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                let file_name = entry.file_name().to_str().unwrap().to_string();
+
+                if path.is_dir() {
+                    // Check if it is a git repository
+                    let git_dir = path.join(".git");
+                    if git_dir.exists() && git_dir.is_dir() {
+                        checked_count += 1;
+
+                        let tx_clone = tx.clone();
+                        thread::spawn(move || {
+                            // Run the git command and format the string
+                            let result = Self::check_repo_status(&path, &file_name);
+                            // Send the tuple (repo_name, formatted_output) back
+                            tx_clone.send(result).unwrap();
+                        });
+                    }
+                }
+            }
+        }
+
+        let mut results = Vec::with_capacity(checked_count);
+        for _ in 0..checked_count {
+            if let Ok(res) = rx.recv() {
+                results.push(res);
+            }
+        }
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, output) in results {
+            println!("{}", output);
+        }
+
+        if checked_count == 0 {
+            println!("No valid git projects found in '{}'", project_dir.display().bright_yellow());
+        } else {
+            println!("\nChecked {} repositories.", checked_count.bright_cyan());
+        }
+
+        Ok(0)
+    }
+}
+
+
+/// Git method wrapper
+impl GitCommand {
+    fn check_repo_status(path: &Path, name: &str) -> (String, String) {
+        // We use `--porcelain -b` to get machine-readable output including branch ahead/behind status
+        let output = Command::new("git")
+            .arg("status")
+            .arg("--porcelain")
+            .arg("-b")
+            .current_dir(path)
+            .output();
+
+        let formatted_result = match output {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                
+                let mut is_dirty: bool = false;
+                let mut behind_count = 0;
+                let mut ahead_count = 0;
+
+                let mut lines = stdout.lines();
+
+                // The first line always contains branch info because of `-b`
+                // Example: "## main...origin/main [behind 1]"
+                let mut branch_name = String::new();
+
+                if let Some(branch_line) = lines.next() {
+                    let content = branch_line.trim_start_matches("## ");
+                    let end_idx = content.find("...").or_else(|| content.find(' ')).unwrap_or(content.len());
+                    branch_name = content[..end_idx].to_string();
+
+                    if let Some(idx) = branch_line.find("ahead ") {
+                        let tail = &branch_line[idx + 6..];
+                        let end = tail.find(|c: char| !c.is_ascii_digit()).unwrap_or(tail.len());
+                        ahead_count = tail[..end].parse::<u32>().unwrap_or(0);
+                    }
+
+                    if let Some(idx) = branch_line.find("behind ") {
+                        let tail = &branch_line[idx + 7..];
+                        let end = tail.find(|c: char| !c.is_ascii_digit()).unwrap_or(tail.len());
+                        behind_count = tail[..end].parse::<u32>().unwrap_or(0);
+                    }
+                }
+
+                // If there are ANY lines after the branch line, the working tree is dirty
+                if lines.next().is_some() {
+                    is_dirty = true;
+                }
+
+                let status_color: Style= Style::new();
+                let dirty_ui = if is_dirty { "Has changes" } else { "Clean" };
+
+                let mut sync_ui = String::new();
+                if behind_count > 0 { 
+                    let msg = format!("- Behind {}", behind_count);
+                    sync_ui.push_str(&format!("{} ", msg.bright_yellow())); 
+                }
+                if ahead_count > 0 { 
+                    let msg = format!("+ Ahead {}", ahead_count);
+                    sync_ui.push_str(&format!("{} ", msg.bright_blue())); 
+                }
+                if behind_count == 0 && ahead_count == 0 {
+                    sync_ui = format!("{}", "Synced".green());
+                }
+
+                format!(
+                    "{}...## {}\n  Status: {}\n  Remote: {}",
+                    name.bold(),
+                    branch_name,
+                    dirty_ui.style(if is_dirty { status_color.red() } else { status_color.green() }),
+                    sync_ui,
+                )
+            }
+            Ok(output) if !output.status.success() => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                format!("  {}\n    Failed to execute git\n    Error: {}", name.bold(), stderr.trim()).red().to_string()
+            },
+            _ => {
+                format!("  {}\n    Failed to execute git\n    Unknown Error", name.bold()).red().to_string()
+            }
+        };
+
+        (name.to_string(), formatted_result)
+    }
+}
+
+
+impl Action for GitCommand {
+    fn run(&self, config: &Config) -> Result<i32, Box<dyn Error>> {
+        match self.action {
+            GitAction::CheckAll => self.check_all(config),
+        }
+    }
+}

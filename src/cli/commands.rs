@@ -8,7 +8,8 @@ use crate::{
         Config,
     },
     cli::{
-        DevelopCommand
+        DevelopCommand,
+        GitCommand
     },
 };
 
@@ -26,6 +27,7 @@ pub enum Commands {
     Develop(DevelopCommand),
 
     //Config(ConfigCommand),
+    Git(GitCommand),
 }
 
 impl Default for Commands {
