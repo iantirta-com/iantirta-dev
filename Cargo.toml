@@ -21,3 +21,11 @@ toml = "*"
 log = "*"
 env_logger = "*"
 owo-colors = "*"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "*", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_System_Console",
+] }

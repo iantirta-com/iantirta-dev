@@ -8,7 +8,6 @@ use std::{
 };
 
 use clap::{Args, Subcommand};
-use log::{debug, trace};
 use owo_colors::{Style, OwoColorize};
 
 use crate::{
