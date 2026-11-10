@@ -30,8 +30,8 @@ pub struct GitCommand {
 pub enum GitAction {
     /// Check for uncommitted changes and branch sync status across all projects
     CheckAll,
-    CommitAll,
-    Commit
+    // CommitAll,
+    // Commit
 }
 
 // Actionable method for git command
