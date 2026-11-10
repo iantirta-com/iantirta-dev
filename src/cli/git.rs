@@ -115,15 +115,15 @@ impl GitCommand {
 
             // 1. Show the user what actually changed (Short Status)
             let status = Command::new("git")
-                .arg("status")
-                .arg("-s")
+                .arg("diff")
+                .arg("--minimal")
                 .current_dir(&path)
                 .output()?;
 
             println!("{}", String::from_utf8_lossy(&status.stdout));
 
             // 2. Prompt for commit message
-            print!("Enter commit message (Leave empty to skip, 'q' to abort all): ");
+            print!("Enter commit message (Leave empty to skip, 'q' to abort all remaining): ");
             std::io::stdout().flush()?;
             
             let mut msg = String::new();
@@ -157,7 +157,7 @@ impl GitCommand {
                     println!("{} {}", "✗".red(), "Commit failed.".red());
                 }
             } else {
-                println!("{}", "Skipped.".bright_black());
+                println!("{}", "Skipped.".bright_yellow());
             }
         }
         Ok(())
