@@ -1,6 +1,4 @@
 
-use std::process::exit;
-
 use iantirta_dev::cli::main as cli_main;
 
 

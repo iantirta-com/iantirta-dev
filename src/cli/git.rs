@@ -70,11 +70,19 @@ impl GitCommand {
         }
 
         let mut results = Vec::with_capacity(checked_count);
-        for _ in 0..checked_count {
+        for i in 0..checked_count {
+
+            print!("\r⏳ Scanning repositories... [{}/{}]", i, checked_count);
+            std::io::stdout().flush()?;
+
             if let Ok(res) = rx.recv() {
                 results.push(res);
             }
         }
+        // Clear the loading line
+        print!("\r\x1b[K"); 
+        std::io::stdout().flush()?;
+
         results.sort_by(|a, b| a.0.cmp(&b.0));
 
         let mut dirty_repos = Vec::new();
