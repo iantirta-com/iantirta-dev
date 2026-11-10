@@ -117,6 +117,7 @@ impl GitCommand {
             let status = Command::new("git")
                 .arg("diff")
                 .arg("--minimal")
+                .arg("--color=always")
                 .current_dir(&path)
                 .output()?;
 
