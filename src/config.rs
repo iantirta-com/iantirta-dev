@@ -1,57 +1,117 @@
-use clap::{Args, Parser, CommandFactory, FromArgMatches, Error as ClapError};
-
-use regex::Regex;
-use env_logger::Builder;
-use log::{Level, LevelFilter, debug, error, info, trace, warn};
-use serde::{Deserialize, Serialize};
 
 use std::{
     fs,
-    path::PathBuf,
-    env,
-    ffi::OsString,
-    error::Error
+    path::{
+        PathBuf
+    },
+    error::{
+        Error
+    },
+    process::{
+        exit
+    }
 };
 
-use crate::constants::{IDEV_CONFIG_PATH, IDEV_PROJECT_DIR};
-use crate::cli::{self, Commands, DevelopCommand, ProjectArgs};
+use clap::{
+    Args,
+};
+use serde::{
+    Deserialize,
+    Serialize
+};
+
+use regex::Regex;
+
+use env_logger::Builder;
+use log::{
+    LevelFilter,
+    debug,
+    info,
+    error,
+};
+
+use crate::{
+    constants::{
+        IDEV_CONFIG_PATH,
+        IDEV_PROJECT_DIR
+    },
+};
 
 
-/// Cli Config Parser
-#[derive(Parser, Debug)]
-#[command(name = "idev")]
-#[command(
-    about = "A fast environment development and project manager by iantirta.com",
-    long_about = None
-)]
+/// Base Config that holds global value
+/// This implement clap and serde
+#[derive(Debug, Args, Serialize, Deserialize)]
 pub struct Config {
 
-    #[command(flatten)]
-    pub config: BaseConfig,
+    /// Set log verbosity: (9: WARN, 1: INFO, 2: DEBUG, +: TRACE)
+    #[arg(short, long="verbose", global=true, action=clap::ArgAction::Count)]
+    #[serde(skip)]
+    verbosity: u8,
 
-    #[command(subcommand)]
-    pub command: Commands,
+    /// Prefix for each project
+    #[arg(long, global=true, required=false)]
+    prefix: String,
+
+    /// Project parent directory
+    #[arg(long, global=true, required=false)]
+    project_dir: PathBuf,
+
+    /// Project venv parent directort
+    #[arg(long, global=true)]
+    venv_dir: Option<PathBuf>,
+
+    /// Project venv prefix
+    /// Available format: (
+    ///    {prefix}: Project prefix
+    ///    {project_id}: Project id
+    ///)
+    #[arg(long, global=true)]
+    venv_prefix: Option<String>,
+
+    /// Config rc file path
+    #[arg(short, long, global=true, required=false)]
+    config_path: PathBuf,
+
+    /// Wheter to save this config into a file
+    #[arg(short, long, global=true, action=clap::ArgAction::SetTrue)]
+    #[serde(skip)]
+    save: bool
 }
 
 
-fn format_error<I: CommandFactory>(err: ClapError) -> ClapError {
-    let mut cmd = I::command();
-    err.format(&mut cmd)
+impl Default for Config {
+    fn default() -> Self {
+        let mut config = Self {
+            verbosity: 0,
+            project_dir: IDEV_PROJECT_DIR.to_path_buf(),
+            prefix: "iantirta|i".to_string(),
+            venv_dir: None,
+            venv_prefix: None,
+            config_path: IDEV_CONFIG_PATH.to_path_buf(),
+            save: false,
+        };
+
+        let file_config = match config.load_file_config() {
+            Ok(c) => Some(c),
+            Err(e) => {
+                eprintln!("Error while loading config: {}", e);
+                None
+            }
+        };
+        if let Some(file_config) = file_config {
+            config = Config {
+                ..file_config
+            }
+        }
+        config
+    }
 }
 
-
-// Custom config parsing
+/// Logging
 impl Config {
 
-    fn default() -> Self {
-        Self {
-            config: BaseConfig::default(),
-            command: Commands::Develop(DevelopCommand::default()),
-        }
-    }
-
-    fn setup_logging(&self) {
-        let log_level = match self.config.verbosity {
+    pub fn setup_logging(&self) {
+        let log_level = match self.verbose() {
             0 => LevelFilter::Warn,
             1 => LevelFilter::Info,
             2 => LevelFilter::Debug,
@@ -59,110 +119,29 @@ impl Config {
         };
 
         Builder::new()
-            .filter_level(log_level)
+            .filter_level(LevelFilter::Warn)
+            .filter_module("iantirta_dev", log_level)
             .format_timestamp(None)
             .format_target(false)
             .init();
 
         debug!("Log level setup for: {}", log_level);
     }
-
-    /// Parse config with default and file config present.
-    /// and will setup logging if set to true.
-    /// 
-    /// all log before this, count as danger log.
-    pub fn parse_config<I, T>(itr: I, setup_logging: bool) -> Self
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<OsString> + Clone,
-    {
-        let mut config = Self::default();
-    
-        {
-            let ref mut default_config = config.config;
-            let file_config = match default_config.load_file_config() {
-                Ok(config) => Some(config),
-                Err(e) => {
-                    eprintln!("Error while loading config: {}", e);
-                    None
-                }
-            };
-            if let Some(file_config) = file_config {
-                *default_config = BaseConfig {
-                    ..file_config
-                }
-            }
-        }
-        config.update_from(itr);
-
-        match setup_logging {
-            true => config.setup_logging(),
-            _ => {},
-        }
-        trace!("{:#?}", config);
-        config
-    }
 }
 
 
-/// Base Config holds global value
-#[derive(Debug, Args, Serialize, Deserialize)]
-pub struct BaseConfig {
+/// File BaseConfig impl
+impl Config {
 
-    /// Set log verbosity: (9: WARN, 1: INFO, 2: DEBUG, +: TRACE)
-    #[arg(short, long="verbose", global=true, action=clap::ArgAction::Count)]
-    #[serde(skip)]
-    pub verbosity: u8,
-
-    #[arg(long, global=true)]
-    project_dir: PathBuf,
-
-    #[arg(long, global = true)]
-    venv_dir: Option<PathBuf>,
-
-    #[arg(long, global=true)]
-    prefix: String,
-
-    #[arg(short, long, global=true)]
-    config_path: PathBuf,
-
-    #[arg(short, long, global=true, action=clap::ArgAction::SetTrue)]
-    #[serde(skip)]
-    pub save: bool
-}
-
-
-impl Default for BaseConfig {
-    fn default() -> Self {
-        Self {
-            project_dir: IDEV_PROJECT_DIR.to_path_buf(),
-            prefix: "iantirta|i".to_string(),
-            config_path: IDEV_CONFIG_PATH.to_path_buf(),
-            venv_dir: None,
-            verbosity: 0,
-            save: false,
-        }
-    }
-}
-
-
-// File BaseConfig impl
-impl BaseConfig {
-
-    fn get_config_path(&self) -> &PathBuf {
-        &self.config_path
-    }
-
-    pub fn load_file_config(&self) -> Result<BaseConfig, Box<dyn std::error::Error>> {
-        let config_path = self.get_config_path();
-        let content = fs::read_to_string(config_path)?;
-        let parsed: BaseConfig = toml::from_str(&content)?;
+    pub fn load_file_config(&self) -> Result<Config, Box<dyn Error>> {
+        let content = fs::read_to_string(&self.config_path)?;
+        let parsed: Config = toml::from_str(&content)?;
         Ok(parsed)
     }
 
-    pub fn save_config(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save_file_config(&self) -> Result<(), Box<dyn Error>> {
         let content = toml::to_string(self)?;
-        let config_path = self.get_config_path();
+        let config_path = self.config_path();
 
         let mut temp_path = config_path.clone();
         temp_path.set_extension("tmp");
@@ -176,22 +155,65 @@ impl BaseConfig {
 }
 
 
-// /// Project Level BaseConfig API
-// impl BaseConfig {
-//     pub fn get_project_re(&self) -> Regex {
-//         let prefix = self.prefix.as_deref().unwrap();
-//         let pattern = format!(r"^(?:{})?[\W_]*(.+)$", prefix);
-//         Regex::new(&pattern)
-//             .expect("Invalid regex pattern generated from config prefix")
-//     }
-// }
+/// Reflection
+impl Config {
+    pub fn config_path(&self) -> &PathBuf {
+        &self.config_path
+    }
+
+    pub fn verbose(&self) -> &u8 {
+        &self.verbosity
+    }
+
+    pub fn save(&self) -> bool {
+        self.save
+    }
+
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
+    pub fn venv_prefix(&self) -> &str {
+        match self.venv_prefix {
+            Some(ref s) => &s,
+            None => ""
+        }
+    }
+
+    pub fn venv_dir(&self) -> &PathBuf {
+        match self.venv_dir {
+            Some(ref s) => &s,
+            None => {
+                error!("venv_dir is not set");
+                exit(1)
+            }
+        }
+    }
+}
 
 
-// /// Reflection BaseConfig
-// impl BaseConfig {
-//     pub fn get_project_dir(&self) -> PathBuf {
-//         self.project_dir.as_deref()
-//             .expect("No project dir was set, add it by --project_dir")
-//             .to_path_buf()
-//     }
-// }
+/// Project Level BaseConfig API
+impl Config {
+    pub fn project_re(&self) -> Regex {
+        let pattern = format!(r"^(?:{})?[\W_]*(.+)$", self.prefix());
+        Regex::new(&pattern).unwrap()
+    }
+
+    pub fn venv_re(&self, project_id: &str) -> Regex {
+        let venv_prefix = self.venv_prefix()
+            .replace("{prefix}", "")
+            .replace("{project_id}", &project_id);
+        
+        let pattern = format!(r"^(?:{})?[\W_]*(?:{})$", self.prefix(), venv_prefix);
+        Regex::new(&pattern).unwrap()
+    }
+
+    /// Exit error if project dir is not a dir
+    pub fn project_dir(&self) -> &PathBuf {
+        if !self.project_dir.is_dir() {
+            error!("Given project_dir should be a directory: {:?}", self.project_dir);
+            exit(1);
+        };
+        &self.project_dir
+    }
+}

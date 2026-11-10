@@ -2,6 +2,13 @@
 name = "iantirta-dev"
 version = "0.1.0"
 edition = "2024"
+authors = [
+    "iantirta.com <ian@iantirta.com>"
+]
+
+[[bin]]
+name = "idev"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "*", features = ["derive"] }

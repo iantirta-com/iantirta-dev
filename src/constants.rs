@@ -59,13 +59,7 @@ fn idev_config_path() -> PathBuf {
     idev_home().join(".idevconfig")
 }
 
+
 fn idev_project_dir() -> PathBuf {
     home_dir().join("IANTIRTACOM")
-}
-
-
-fn main() {
-    println!("Idev Home dir: {:#?}", *IDEV_HOME);
-    println!("Idev Config Path: {:#?}", *IDEV_CONFIG_PATH);
-    println!("Home dir: {:#?}", home_dir());
 }

@@ -3,6 +3,7 @@ use clap::{Args};
 /// Common project argument
 /// such as project_id
 #[derive(Args, Debug, Default)]
+#[group(required=true, multiple=false)]
 pub struct ProjectArgs {
 
     #[arg(value_name = "PROJECT_ID")]
