@@ -1,6 +1,5 @@
 use std::{
     error::Error,
-    path::{Path, PathBuf},
     process::Command,
     sync::mpsc,
     thread,
@@ -8,17 +7,14 @@ use std::{
 };
 
 use clap::{Args, Subcommand};
-use owo_colors::{Style, OwoColorize};
+use owo_colors::{OwoColorize};
 
 use crate::{
-    cli::{
-        Action
-    },
-    config::{
-        Config
-    }
+    cli::Action, config::Config, service::Git
 };
 
+
+/// Git command for cli
 #[derive(Args, Debug)]
 pub struct GitCommand {
     #[command(subcommand)]
@@ -26,16 +22,47 @@ pub struct GitCommand {
 }
 
 
+/// Git subcommmands for cli
 #[derive(Subcommand, Debug)]
 pub enum GitAction {
+
     /// Check for uncommitted changes and branch sync status across all projects
     CheckAll,
-    // CommitAll,
-    // Commit
 }
 
 // Actionable method for git command
 impl GitCommand {
+    /// Helper for user input cli
+    fn input(&self, msg: &str) -> Result<String, Box<dyn Error>> {
+        print!("{}", msg);
+        std::io::stdout().flush()?;
+
+        let mut user_input = String::new();
+        std::io::stdin().read_line(&mut user_input)?;
+
+        Ok(user_input)
+    }
+
+    fn yes_input(&self, msg: &str) -> Result<bool, Box<dyn Error>> {
+        let user_input = self.input(msg)?;
+        if user_input.trim().eq_ignore_ascii_case("y") ||
+            user_input.trim().eq_ignore_ascii_case("yes")
+        {
+            return Ok(true)
+        };
+        Ok(false)
+    }
+
+    fn no_input(&self, msg: &str) -> Result<bool, Box<dyn Error>> {
+        let user_input = self.input(msg)?;
+        if user_input.trim().eq_ignore_ascii_case("n") ||
+            user_input.trim().eq_ignore_ascii_case("no")
+        {
+            return Ok(true)
+        };
+        Ok(false)
+    }
+
     fn check_all(&self, config: &Config) -> Result<i32, Box<dyn Error>> {
         let project_dir = config.project_dir();
 
@@ -47,38 +74,31 @@ impl GitCommand {
         let mut checked_count = 0;
 
         for entry in project_dir.read_dir()? {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                let file_name = entry.file_name().to_str().unwrap().to_string();
+            let path = entry?.path();
+            if !path.is_dir() { continue };
 
-                if path.is_dir() {
-                    // Check if it is a git repository
-                    let git_dir = path.join(".git");
-                    if git_dir.exists() && git_dir.is_dir() {
-                        checked_count += 1;
+            let git_dir = path.join(".git");
+            if !git_dir.exists() || !git_dir.is_dir() { continue }
 
-                        let tx_clone = tx.clone();
-                        thread::spawn(move || {
-                            // Run the git command and format the string
-                            let result = Self::check_repo_status(&path, &file_name);
-                            // Send the tuple (repo_name, formatted_output) back
-                            tx_clone.send(result).unwrap();
-                        });
-                    }
-                }
-            }
+            checked_count += 1;
+
+            let tx_clone = tx.clone();
+            thread::spawn(move || {
+                let result = Git::fetch_and_status(&path);
+                tx_clone.send((path.clone(), result)).unwrap();
+            });
         }
 
         let mut results = Vec::with_capacity(checked_count);
-        for i in 0..checked_count {
+        drop(tx);
 
-            print!("\r⏳ Scanning repositories... [{}/{}]", i, checked_count);
+        for res in rx {
+            results.push(res);
+
+            print!("\r~ Scanning repositories... [{}/{}]", results.len(), checked_count);
             std::io::stdout().flush()?;
-
-            if let Ok(res) = rx.recv() {
-                results.push(res);
-            }
         }
+
         // Clear the loading line
         print!("\r\x1b[K"); 
         std::io::stdout().flush()?;
@@ -89,18 +109,56 @@ impl GitCommand {
         let mut behind_repos = Vec::new();
         let mut ahead_repos = Vec::new();
 
-        for (name, path, output, is_dirty, behind_count, ahead_count) in results {
-            println!("{}", output);
+        for (path, status) in results {
+            let filename = match path.file_name().and_then(|os_str| os_str.to_str()) {
+                Some(name) => name,
+                None => "Unknown"
+            };
 
-            if behind_count > 0 {
-                behind_repos.push((name.clone(), path.clone()));
-            }
-            if is_dirty {
-                dirty_repos.push((name, path));
-            } else if ahead_count > 0 {
-                // If it's dirty, we will prompt to push during the commit phase instead.
-                // Only add to ahead_repos if it is clean but has unpushed commits.
-                ahead_repos.push((name.clone(), path.clone()));
+            match status {
+                Ok(status) => {
+                    let status_data = Git::get_branch_ahead_behind_from_status(&status);
+
+                    let mut remote_sync_str = String::new();
+                    if let a = status_data.ahead_count && a > 0 {
+                        remote_sync_str.push_str(&format!("+ Ahead ({}) ", a).bright_blue().to_string());
+                    }
+                    if let b = status_data.behind_count && b > 0 {
+                        remote_sync_str.push_str(&format!("- Behind ({})", b).bright_yellow().to_string());
+                        behind_repos.push((filename.to_string(), path.clone()));
+                    }
+                    if remote_sync_str.is_empty() {
+                        remote_sync_str = "Synced".green().to_string();
+                    }
+
+                    let mut dirty_ui_str = String::new();
+                    if status_data.is_dirty {
+                        dirty_repos.push((filename.to_string(), path.clone()));
+                        dirty_ui_str.push_str(&"Has changes".red().to_string());
+                    } else if status_data.ahead_count > 0 {
+                        // If it's dirty, we will prompt to push during the commit phase instead.
+                        // Only add to ahead_repos if it is clean but has unpushed commits.
+                        ahead_repos.push((filename.to_string(), path.clone()))
+                    } else { 
+                        dirty_ui_str.push_str(&"Clean".green().to_string());
+                    }
+
+                    println!(
+                        "{}...## {}\n  Status: {}\n  Remote: {}",
+                        filename.bold(),
+                        status_data.branch_name,
+                        dirty_ui_str,
+                        remote_sync_str
+                    )
+                }
+                Err(e) => {
+                    let msg = format!(
+                        "Failed to check {}\n Error: {e}",
+                        filename.bold()
+                    )
+                    ;
+                    eprintln!("{}", msg.red());
+                }
             }
         }
 
@@ -111,217 +169,112 @@ impl GitCommand {
         }
 
         if !behind_repos.is_empty() {
-            print!("\nFound {} repository(s) behind remote. Pull changes? [y/N]: ", behind_repos.len().bright_yellow());
-            std::io::stdout().flush()?;
+            let msg = format!(
+                "\nFound {} repository(s) behind remote. Pull changes? [y/N]: ",
+                behind_repos.len().bright_yellow()
+            );
+            if self.yes_input(&msg)? {
+                for (name, path) in behind_repos {
+                    let msg = format!(
+                        "Would you like to pull {}? [Y/n]: ",
+                        name.bold()
+                    );
+                    if !self.no_input(&msg)? {
+                        println!("  {} {}...", "~ Pulling".bright_blue(), name.bold());
+                        Git::pull(&path).status()?;
+                    }
+                }
+            };
+        }
 
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-            
-            if input.trim().eq_ignore_ascii_case("y") {
-                for (name, path) in &behind_repos {
-                    println!("  {} {}...", "~ Pulling".bright_blue(), name.bold());
-                    Command::new("git").arg("pull").current_dir(path).status()?;
+        if !dirty_repos.is_empty() {
+            let msg = format!(
+                "\nFound {} repository(s) with uncommitted changes. Review and commit? [y/N]: ",
+                dirty_repos.len().bright_yellow()
+            );
+            if self.yes_input(&msg)? {
+                for (name, path) in dirty_repos {
+
+                    let msg = format!(
+                        "Would you like to review {}? [Y/n]: ",
+                        name.bold()
+                    );
+
+                    if self.no_input(&msg)? { continue };
+
+                    println!("\n{}", "==================================================".bright_cyan());
+                    println!("📝 Reviewing: {}", name.bold().bright_yellow());
+                    println!("{}", "==================================================".bright_cyan());
+
+                    let output = Git::diff(&path).output()?;
+                    println!("{}", String::from_utf8_lossy(&output.stdout));
+
+                    println!("Repo: {}", name.bold().bright_yellow());
+                    
+                    let user_input = self.input("Enter commit message (Leave empty to skip, 'q' to abort all remaining): ")?;
+                    if user_input.trim().eq_ignore_ascii_case("q") {
+                        println!("{}", "Aborting remaining commits.".bright_red());
+                        break;
+                    }
+
+                    if user_input.trim().is_empty() {
+                        println!("{}", "Skipped.".bright_yellow());
+                        continue;
+                    };
+
+                    Command::new("git")
+                        .arg("add")
+                        .arg(".")
+                        .current_dir(&path)
+                        .status()?;
+
+                    let commit_status = Git::commit(&path, &user_input)
+                        .status()?;
+
+                    if commit_status.success() {
+                        println!("{}", "[V] Committed successfully!".green());
+
+                        if self.yes_input("Push changes to remote? [y/N]")? {
+                            println!("  {} {}...", "+ Pushing".bright_green(), name.bold());
+                            let push_status = Git::push(&path)
+                                .status()?;
+
+                            if push_status.success() {
+                                println!("{}", "[V] Pushed successfully!".green());
+
+                            } else {
+                                println!("{}", "[X] Push failed.".red());
+                            }
+
+                        }
+
+                    } else {
+                        println!("{}", "[X] Commit failed.".red());
+                    }
                 }
             }
         }
 
-        if !dirty_repos.is_empty() {
-            print!("\nFound {} repository(s) with uncommitted changes. Review and commit? [y/N]: ", dirty_repos.len().bright_yellow());
-            std::io::stdout().flush()?;
-
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-            
-            if input.trim().eq_ignore_ascii_case("y") {
-                self.interactive_commit(dirty_repos)?;
-            }
-        }
-
         if !ahead_repos.is_empty() {
-            print!("\nFound {} repository(s) with unpushed commits. Push changes? [y/N]: ", ahead_repos.len().bright_yellow());
-            std::io::stdout().flush()?;
-
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-            
-            if input.trim().eq_ignore_ascii_case("y") {
-                for (name, path) in &ahead_repos {
-                    println!("  {} {}...", "+ Pushing".bright_green(), name.bold());
-                    Command::new("git").arg("push").current_dir(path).status()?;
+            let msg = format!(
+                "\nFound {} repository(s) with unpushed commits. Push changes? [y/N]: ",
+                ahead_repos.len().bright_yellow()
+            );
+            if self.yes_input(&msg)? {
+                for (name, path) in ahead_repos {
+                    let msg = format!(
+                        "Would you like to push {}? [Y/n]: ",
+                        name.bold()
+                    );
+                    if !self.no_input(&msg)? {
+                        println!("  {} {}...", "+ Pushing".bright_green(), name.bold());
+                        Git::push(&path).status()?;
+                    }
                 }
             }
         }
 
         Ok(0)
-    }
-
-    fn interactive_commit(&self, dirty_repos: Vec<(String, PathBuf)>) -> Result<(), Box<dyn Error>> {
-        for (name, path) in dirty_repos {
-            println!("\n{}", "==================================================".bright_cyan());
-            println!("📝 Reviewing: {}", name.bold().bright_yellow());
-            println!("{}", "==================================================".bright_cyan());
-
-            // 1. Show the user what actually changed (Short Status)
-            let status = Command::new("git")
-                .arg("diff")
-                .arg("--minimal")
-                .arg("--color=always")
-                .current_dir(&path)
-                .output()?;
-
-            println!("{}", String::from_utf8_lossy(&status.stdout));
-
-            // 2. Prompt for commit message
-            print!("Enter commit message (Leave empty to skip, 'q' to abort all remaining): ");
-            std::io::stdout().flush()?;
-            
-            let mut msg = String::new();
-            std::io::stdin().read_line(&mut msg)?;
-            let msg = msg.trim();
-
-            if msg.eq_ignore_ascii_case("q") {
-                println!("{}", "Aborting remaining commits.".bright_red());
-                break;
-            }
-
-            if !msg.is_empty() {
-                // 3. git add .
-                Command::new("git")
-                    .arg("add")
-                    .arg(".")
-                    .current_dir(&path)
-                    .status()?;
-
-                // 4. git commit -m "..."
-                let commit = Command::new("git")
-                    .arg("commit")
-                    .arg("-m")
-                    .arg(msg)
-                    .current_dir(&path)
-                    .status()?;
-
-                if commit.success() {
-                    println!("{} {}", "✓".green(), "Committed successfully!".green());
-
-                    print!("Push changes to remote? [y/N]: ");
-                    std::io::stdout().flush()?;
-                    let mut push_msg = String::new();
-                    std::io::stdin().read_line(&mut push_msg)?;
-                    
-                    if push_msg.trim().eq_ignore_ascii_case("y") {
-                        println!("  {} {}...", "⬆ Pushing".bright_green(), name.bold());
-                        let push_status = Command::new("git")
-                            .arg("push")
-                            .current_dir(&path)
-                            .status()?;
-                            
-                        if push_status.success() {
-                            println!("{} {}", "✓".green(), "Pushed successfully!".green());
-                        } else {
-                            println!("{} {}", "✗".red(), "Push failed.".red());
-                        }
-                    }
-                } else {
-                    println!("{} {}", "✗".red(), "Commit failed.".red());
-                }
-            } else {
-                println!("{}", "Skipped.".bright_yellow());
-            }
-        }
-        Ok(())
-    }
-}
-
-
-/// Git method wrapper
-impl GitCommand {
-    fn check_repo_status(path: &Path, name: &str) -> (String, PathBuf, String, bool, u32, u32) {
-        // We use `--porcelain -b` to get machine-readable output including branch ahead/behind status
-        let output = Command::new("git")
-            .arg("status")
-            .arg("--porcelain")
-            .arg("-b")
-            .current_dir(path)
-            .output();
-
-        let mut final_is_dirty = false;
-        let mut final_behind_count = 0;
-        let mut final_ahead_count = 0;
-
-        let formatted_result = match output {
-            Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                
-                let mut is_dirty: bool = false;
-                let mut behind_count = 0;
-                let mut ahead_count = 0;
-
-                let mut lines = stdout.lines();
-
-                // The first line always contains branch info because of `-b`
-                // Example: "## main...origin/main [behind 1]"
-                let mut branch_name = String::new();
-
-                if let Some(branch_line) = lines.next() {
-                    let content = branch_line.trim_start_matches("## ");
-                    let end_idx = content.find("...").or_else(|| content.find(' ')).unwrap_or(content.len());
-                    branch_name = content[..end_idx].to_string();
-
-                    if let Some(idx) = branch_line.find("ahead ") {
-                        let tail = &branch_line[idx + 6..];
-                        let end = tail.find(|c: char| !c.is_ascii_digit()).unwrap_or(tail.len());
-                        ahead_count = tail[..end].parse::<u32>().unwrap_or(0);
-                    }
-
-                    if let Some(idx) = branch_line.find("behind ") {
-                        let tail = &branch_line[idx + 7..];
-                        let end = tail.find(|c: char| !c.is_ascii_digit()).unwrap_or(tail.len());
-                        behind_count = tail[..end].parse::<u32>().unwrap_or(0);
-                    }
-                }
-
-                // If there are ANY lines after the branch line, the working tree is dirty
-                if lines.next().is_some() {
-                    is_dirty = true;
-                    final_is_dirty = true;
-                }
-
-                let status_color: Style= Style::new();
-                let dirty_ui = if is_dirty { "Has changes" } else { "Clean" };
-
-                let mut sync_ui = String::new();
-                if behind_count > 0 { 
-                    let msg = format!("- Behind {}", behind_count);
-                    sync_ui.push_str(&format!("{} ", msg.bright_yellow())); 
-                }
-                if ahead_count > 0 { 
-                    let msg = format!("+ Ahead {}", ahead_count);
-                    sync_ui.push_str(&format!("{} ", msg.bright_blue())); 
-                }
-                if behind_count == 0 && ahead_count == 0 {
-                    sync_ui = format!("{}", "Synced".green());
-                }
-                final_behind_count = behind_count;
-                final_ahead_count = ahead_count;
-
-                format!(
-                    "{}...## {}\n  Status: {}\n  Remote: {}",
-                    name.bold(),
-                    branch_name,
-                    dirty_ui.style(if is_dirty { status_color.red() } else { status_color.green() }),
-                    sync_ui,
-                )
-            }
-            Ok(output) if !output.status.success() => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                format!("  {}\n    Failed to execute git\n    Error: {}", name.bold(), stderr.trim()).red().to_string()
-            },
-            _ => {
-                format!("  {}\n    Failed to execute git\n    Unknown Error", name.bold()).red().to_string()
-            }
-        };
-
-        (name.to_string(), path.to_path_buf(), formatted_result, final_is_dirty, final_behind_count, final_ahead_count)
     }
 }
 
